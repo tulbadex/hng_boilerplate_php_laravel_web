@@ -16,33 +16,29 @@ class ProductController extends Controller
     public function search(Request $request)
     {
         $validator = Validator::make($request->all(), [
-            'name' => 'required|string|max:255',
+            'product_name' => 'required|string|max:255',
             'category' => 'nullable|string|max:255',
             'minPrice' => 'nullable|numeric|min:0',
             'maxPrice' => 'nullable|numeric|min:0',
+            'status' => 'nullable|string|in:in_stock,out_of_stock,low_on_stock',
+            'page' => 'nullable|integer|min:1',
+            'limit' => 'nullable|integer|min:1|max:100',
         ]);
 
+        // Handle validation errors
         if ($validator->fails()) {
-            $errors = [];
-            foreach ($validator->errors()->messages() as $field => $messages) {
-                foreach ($messages as $message) {
-                    $errors[] = [
-                        'parameter' => $field,
-                        'message' => $message,
-                    ];
-                }
-            }
-
             return response()->json([
-                'success' => false,
-                'errors' => $errors,
-                'statusCode' => 422
-            ], 422);
+                'type' => 'Validation Error',
+                'title' => 'Invalid parameters provided',
+                'status' => 400,
+                'detail' => 'There were validation errors with the request parameters.',
+                'errors' => $validator->errors(),
+            ], 400);
         }
 
         $query = Product::query();
 
-        $query->where('name', 'LIKE', '%' . $request->name . '%');
+        $query->where('name', 'LIKE', '%' . $request->product_name . '%');
 
         // Add category filter if provided
         if ($request->filled('category')) {
@@ -59,14 +55,44 @@ class ProductController extends Controller
             $query->where('price', '<=', $request->maxPrice);
         }
 
-        $products = $query->get();
+        if ($request->filled('status')) {
+            $query->whereHas('productsVariant', function ($q) use ($request) {
+                $q->where('stock_status', $request->status);
+            });
+        }
 
-        return response()->json([
-            'success' => true,
-            'products' => $products,
-            'statusCode' => 200
-        ], 200);
+
+        $page = $request->input('page', 1);
+        $limit = $request->input('limit', 10);
+        $products = $query->with(['categories'])
+            ->paginate($limit, ['*'], 'page', $page);
+
+        // If no products are found, return a 404 response
+        if ($products->isEmpty()) {
+            return response()->json([
+                'type' => 'Not Found',
+                'title' => 'No products found',
+                'status' => 404,
+                'detail' => 'No products match the search criteria.',
+            ], 404);
+        }
+
+        // Map the products to the desired response format
+        $transformedProducts = $products->map(function ($product) {
+            return [
+                'id' => $product->product_id,
+                'name' => $product->name,
+                'description' => $product->description,
+                'price' => $product->price,
+                'category' => $product->categories->isNotEmpty() ? $product->categories->map->name : [],
+                'created_at' => $product->created_at->toIso8601String(),
+                'updated_at' => $product->updated_at->toIso8601String(),
+            ];
+        });
+
+        return response()->json($transformedProducts, 200);
     }
+
     /**
      * Display a listing of the resource.
      */
